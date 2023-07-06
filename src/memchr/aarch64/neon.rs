@@ -1,7 +1,7 @@
 use std::arch::aarch64::*;
-use std::mem::transmute;
+use std::mem::{size_of, transmute};
 
-const VEC_SIZE: usize = 16;
+const VEC_SIZE: usize = size_of::<uint8x16_t>();
 
 /// Unroll size for mem{r}chr.
 const UNROLL_SIZE_1: usize = 4;
@@ -213,12 +213,7 @@ unsafe fn search64<
 
 /// Search 32 bytes
 #[inline(always)]
-unsafe fn search32<
-    const IS_FWD: bool,
-    const N: usize,
-    const N2: usize,
-    const N4: usize,
->(
+unsafe fn search32<const IS_FWD: bool, const N: usize, const N2: usize>(
     n: [u8; N],
     ptr: *const u8,
     start_ptr: *const u8,
@@ -280,12 +275,7 @@ unsafe fn search32<
 
 /// Search 16 bytes
 #[inline(always)]
-unsafe fn search16<
-    const IS_FWD: bool,
-    const N: usize,
-    const N2: usize,
-    const N4: usize,
->(
+unsafe fn search16<const IS_FWD: bool, const N: usize>(
     n: [u8; N],
     ptr: *const u8,
     start_ptr: *const u8,
@@ -377,8 +367,8 @@ unsafe fn memchr_generic_neon<
     }
 
     let loop_search = match UNROLL {
-        1 => search16::<IS_FWD, N, N2, N4>,
-        2 => search32::<IS_FWD, N, N2, N4>,
+        1 => search16::<IS_FWD, N>,
+        2 => search32::<IS_FWD, N, N2>,
         4 => search64::<IS_FWD, N, N2, N4>,
         _ => unreachable!(),
     };
@@ -398,13 +388,13 @@ unsafe fn memchr_generic_neon<
     if UNROLL > 1 {
         for _ in 0..remainder.len() / VEC_SIZE {
             if let Some(idx) = if IS_FWD {
-                let ret = search16::<IS_FWD, N, N2, N4>(n, ptr, start_ptr);
+                let ret = search16::<IS_FWD, N>(n, ptr, start_ptr);
 
                 ptr = ptr.add(VEC_SIZE);
 
                 ret
             } else {
-                let ret = search16::<IS_FWD, N, N2, N4>(n, ptr, start_ptr);
+                let ret = search16::<IS_FWD, N>(n, ptr, start_ptr);
 
                 ptr = ptr.offset(-(VEC_SIZE as isize));
 
@@ -418,13 +408,13 @@ unsafe fn memchr_generic_neon<
     if haystack.len() % VEC_SIZE != 0 {
         // overlapped search of remainder
         if IS_FWD {
-            return search16::<IS_FWD, N, N2, N4>(
+            return search16::<IS_FWD, N>(
                 n,
                 start_ptr.add(haystack.len() - VEC_SIZE),
                 start_ptr,
             );
         } else {
-            return search16::<IS_FWD, N, N2, N4>(n, start_ptr, start_ptr);
+            return search16::<IS_FWD, N>(n, start_ptr, start_ptr);
         }
     }
 
