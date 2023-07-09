@@ -66,30 +66,11 @@ pub unsafe fn memrchr3(
     )
 }
 
-const fn generate_mask64() -> u64 {
-    let mut mask = 0;
-    let mut byte = 0b0000_0001;
-
-    let mut i = 0;
-    while i < 8 {
-        mask |= byte;
-        byte <<= 8 + 1;
-
-        i += 1;
-    }
-
-    mask
-}
-
 /// Returns true if the all bits in the register are set to 0.
 #[inline(always)]
 unsafe fn eq0(x: uint8x16_t) -> bool {
-    low64(vpmaxq_u8(x, x)) == 0
-}
-
-#[inline(always)]
-unsafe fn low64(x: uint8x16_t) -> u64 {
-    vgetq_lane_u64(vreinterpretq_u64_u8(x), 0)
+    let low = vreinterpretq_u64_u8(vpmaxq_u8(x, x));
+    vgetq_lane_u64(low, 0) == 0
 }
 
 // .fold() and .reduce() cause LLVM to generate a huge dependency chain,
@@ -114,24 +95,19 @@ unsafe fn parallel_reduce<const N: usize>(
     masks[0]
 }
 
+unsafe fn movemask(x: uint8x16_t) -> u64 {
+    let combined = vshrn_n_u16(vreinterpretq_u16_u8(x), 4);
+    vget_lane_u64(vreinterpret_u64_u8(combined), 0)
+}
+
 /// Search 64 bytes
 #[inline(always)]
-unsafe fn search64<
-    const IS_FWD: bool,
-    const N: usize,
-    const N2: usize,
-    const N4: usize,
->(
+unsafe fn search64<const IS_FWD: bool, const N: usize, const N4: usize>(
     n: [u8; N],
     ptr: *const u8,
     start_ptr: *const u8,
 ) -> Option<usize> {
     assert!(N4 == 4 * N);
-    assert!(N2 == 2 * N);
-
-    const MASK4: u64 = generate_mask64();
-
-    let repmask4 = vreinterpretq_u8_u64(vdupq_n_u64(MASK4));
 
     let x1 = vld1q_u8(ptr);
     let x2 = vld1q_u8(ptr.add(1 * VEC_SIZE));
@@ -155,31 +131,52 @@ unsafe fn search64<
     });
 
     if !eq0(cmpmask) {
-        let cmp1 = parallel_reduce(masks1);
-        let cmp2 = parallel_reduce(masks2);
-        let cmp3 = parallel_reduce(masks3);
-        let cmp4 = parallel_reduce(masks4);
-
-        let cmp1 = vandq_u8(repmask4, cmp1);
-        let cmp2 = vandq_u8(repmask4, cmp2);
-        let cmp3 = vandq_u8(repmask4, cmp3);
-        let cmp4 = vandq_u8(repmask4, cmp4);
-
-        let reduce1 = vpaddq_u8(cmp1, cmp2);
-        let reduce2 = vpaddq_u8(cmp3, cmp4);
-        let reduce3 = vpaddq_u8(reduce1, reduce2);
-        let reduce4 = vpaddq_u8(reduce3, reduce3);
-
-        let low64: u64 = low64(reduce4);
-
         let offset = ptr as usize - start_ptr as usize;
 
         if IS_FWD {
-            return Some(offset + low64.trailing_zeros() as usize);
+            let mask = movemask(parallel_reduce(masks1));
+            let mut at = offset;
+            if mask != 0 {
+                return Some(at + (mask.trailing_zeros() as usize / 4));
+            }
+
+            let mask = movemask(parallel_reduce(masks2));
+            at += VEC_SIZE;
+            if mask != 0 {
+                return Some(at + (mask.trailing_zeros() as usize / 4));
+            }
+
+            let mask = movemask(parallel_reduce(masks3));
+            at += VEC_SIZE;
+            if mask != 0 {
+                return Some(at + (mask.trailing_zeros() as usize / 4));
+            }
+
+            let mask = movemask(parallel_reduce(masks4));
+            at += VEC_SIZE;
+            return Some(at + (mask.trailing_zeros() as usize / 4));
         } else {
-            return Some(
-                offset + (4 * VEC_SIZE - 1) - (low64.leading_zeros() as usize),
-            );
+            let mask = movemask(parallel_reduce(masks4));
+            let mut at = offset + (4 * VEC_SIZE - 1);
+            if mask != 0 {
+                return Some(at - (mask.leading_zeros() as usize / 4));
+            }
+
+            let mask = movemask(parallel_reduce(masks3));
+            at -= VEC_SIZE;
+            if mask != 0 {
+                return Some(at - (mask.leading_zeros() as usize / 4));
+            }
+
+            let mask = movemask(parallel_reduce(masks2));
+            at -= VEC_SIZE;
+            if mask != 0 {
+                return Some(at - (mask.leading_zeros() as usize / 4));
+            }
+
+            let mask = movemask(parallel_reduce(masks1));
+            at -= VEC_SIZE;
+            return Some(at - (mask.leading_zeros() as usize / 4));
         }
     }
 
@@ -324,7 +321,7 @@ unsafe fn memchr_generic_neon<
     let loop_search = match UNROLL {
         1 => search16::<IS_FWD, N>,
         2 => search32::<IS_FWD, N, N2>,
-        4 => search64::<IS_FWD, N, N2, N4>,
+        4 => search64::<IS_FWD, N, N4>,
         _ => unreachable!(),
     };
 
