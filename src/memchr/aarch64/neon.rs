@@ -1,5 +1,5 @@
 use std::arch::aarch64::*;
-use std::mem::{size_of, transmute};
+use std::mem::size_of;
 
 const VEC_SIZE: usize = size_of::<uint8x16_t>();
 
@@ -64,21 +64,6 @@ pub unsafe fn memrchr3(
         [n1, n2, n3],
         haystack,
     )
-}
-
-const fn generate_mask32() -> u32 {
-    let mut mask = 0;
-    let mut byte = 0b0000_0011;
-
-    let mut i = 0;
-    while i < 4 {
-        mask |= byte;
-        byte <<= 8 + 2;
-
-        i += 1;
-    }
-
-    mask
 }
 
 const fn generate_mask64() -> u64 {
@@ -210,9 +195,6 @@ unsafe fn search32<const IS_FWD: bool, const N: usize, const N2: usize>(
 ) -> Option<usize> {
     assert!(N2 == 2 * N);
 
-    const MASK: u32 = generate_mask32();
-    let repmask2 = vdupq_n_u32(MASK);
-
     let x1 = vld1q_u8(ptr);
     let x2 = vld1q_u8(ptr.add(VEC_SIZE));
 
@@ -231,24 +213,28 @@ unsafe fn search32<const IS_FWD: bool, const N: usize, const N2: usize>(
     if !eq0(cmpmask) {
         let cmp1 = parallel_reduce(masks1);
         let cmp2 = parallel_reduce(masks2);
-
-        let cmp1 = vandq_u8(transmute(repmask2), cmp1);
-        let cmp2 = vandq_u8(transmute(repmask2), cmp2);
-
-        let reduce1 = vpaddq_u8(cmp1, cmp2);
-        let reduce2 = vpaddq_u8(reduce1, reduce1);
-
-        let low64: u64 = low64(reduce2);
+        let combined1 = vshrn_n_u16(vreinterpretq_u16_u8(cmp1), 4);
+        let combined2 = vshrn_n_u16(vreinterpretq_u16_u8(cmp2), 4);
+        let bits1 = vget_lane_u64(vreinterpret_u64_u8(combined1), 0);
+        let bits2 = vget_lane_u64(vreinterpret_u64_u8(combined2), 0);
 
         let offset = ptr as usize - start_ptr as usize;
 
         if IS_FWD {
-            return Some(offset + low64.trailing_zeros() as usize / 2);
+            let byte_offset = if bits1 != 0 {
+                (bits1.trailing_zeros() / 4) as usize
+            } else {
+                let bits2 = vget_lane_u64(vreinterpret_u64_u8(combined2), 0);
+                VEC_SIZE + (bits2.trailing_zeros() / 4) as usize
+            };
+            return Some(offset + byte_offset);
         } else {
-            return Some(
-                offset + (2 * VEC_SIZE - 1)
-                    - (low64.leading_zeros() as usize / 2),
-            );
+            let byte_offset = if bits2 != 0 {
+                (bits2.leading_zeros() / 4) as usize
+            } else {
+                VEC_SIZE + (bits1.leading_zeros() / 4) as usize
+            };
+            return Some(offset + (2 * VEC_SIZE - 1) - byte_offset);
         }
     }
 
