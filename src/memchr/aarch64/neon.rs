@@ -262,8 +262,6 @@ unsafe fn search16<const IS_FWD: bool, const N: usize>(
     ptr: *const u8,
     start_ptr: *const u8,
 ) -> Option<usize> {
-    let repmask1 = vreinterpretq_u8_u16(vdupq_n_u16(0xF00F));
-
     let nv = n.map(|x| vdupq_n_u8(x));
 
     let x1 = vld1q_u8(ptr);
@@ -272,21 +270,17 @@ unsafe fn search16<const IS_FWD: bool, const N: usize>(
 
     let cmpmask = parallel_reduce(cmp_masks);
 
-    if !eq0(cmpmask) {
-        let cmpmask = vandq_u8(cmpmask, repmask1);
-        let combined = vpaddq_u8(cmpmask, cmpmask);
-        let comb_low: u64 = low64(combined);
-
+    let combined = vshrn_n_u16(vreinterpretq_u16_u8(cmpmask), 4);
+    let comb_low = vget_lane_u64(vreinterpret_u64_u8(combined), 0);
+    if comb_low != 0 {
         let offset = ptr as usize - start_ptr as usize;
 
-        if IS_FWD {
-            return Some(offset + comb_low.trailing_zeros() as usize / 4);
+        let res = if IS_FWD {
+            offset + comb_low.trailing_zeros() as usize / 4
         } else {
-            return Some(
-                offset + (VEC_SIZE - 1)
-                    - (comb_low.leading_zeros() as usize / 4),
-            );
-        }
+            offset + (VEC_SIZE - 1) - (comb_low.leading_zeros() as usize / 4)
+        };
+        return Some(res);
     }
 
     None
