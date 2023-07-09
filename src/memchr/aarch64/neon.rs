@@ -153,22 +153,12 @@ unsafe fn search64<
     let x3 = vld1q_u8(ptr.add(2 * VEC_SIZE));
     let x4 = vld1q_u8(ptr.add(3 * VEC_SIZE));
 
-    let mut nv: [uint8x16_t; N] = [vdupq_n_u8(0); N];
-    for i in 0..N {
-        nv[i] = vdupq_n_u8(n[i]);
-    }
+    let nv = n.map(|x| vdupq_n_u8(x));
 
-    let mut masks1 = [vdupq_n_u8(0); N];
-    let mut masks2 = [vdupq_n_u8(0); N];
-    let mut masks3 = [vdupq_n_u8(0); N];
-    let mut masks4 = [vdupq_n_u8(0); N];
-
-    for i in 0..N {
-        masks1[i] = vceqq_u8(x1, nv[i]);
-        masks2[i] = vceqq_u8(x2, nv[i]);
-        masks3[i] = vceqq_u8(x3, nv[i]);
-        masks4[i] = vceqq_u8(x4, nv[i]);
-    }
+    let masks1 = nv.map(|x| vceqq_u8(x1, x));
+    let masks2 = nv.map(|x| vceqq_u8(x2, x));
+    let masks3 = nv.map(|x| vceqq_u8(x3, x));
+    let masks4 = nv.map(|x| vceqq_u8(x4, x));
 
     let cmpmask = parallel_reduce({
         let mut mask1234 = [vdupq_n_u8(0); N4];
@@ -226,18 +216,10 @@ unsafe fn search32<const IS_FWD: bool, const N: usize, const N2: usize>(
     let x1 = vld1q_u8(ptr);
     let x2 = vld1q_u8(ptr.add(VEC_SIZE));
 
-    let mut nv: [uint8x16_t; N] = [vdupq_n_u8(0); N];
-    for i in 0..N {
-        nv[i] = vdupq_n_u8(n[i]);
-    }
+    let nv = n.map(|x| vdupq_n_u8(x));
 
-    let mut masks1 = [vdupq_n_u8(0); N];
-    let mut masks2 = [vdupq_n_u8(0); N];
-
-    for i in 0..N {
-        masks1[i] = vceqq_u8(x1, nv[i]);
-        masks2[i] = vceqq_u8(x2, nv[i]);
-    }
+    let masks1 = nv.map(|x| vceqq_u8(x1, x));
+    let masks2 = nv.map(|x| vceqq_u8(x2, x));
 
     let cmpmask = parallel_reduce({
         let mut mask12 = [vdupq_n_u8(0); N2];
@@ -282,18 +264,11 @@ unsafe fn search16<const IS_FWD: bool, const N: usize>(
 ) -> Option<usize> {
     let repmask1 = vreinterpretq_u8_u16(vdupq_n_u16(0xF00F));
 
-    let mut nv: [uint8x16_t; N] = [vdupq_n_u8(0); N];
-    for i in 0..N {
-        nv[i] = vdupq_n_u8(n[i]);
-    }
+    let nv = n.map(|x| vdupq_n_u8(x));
 
     let x1 = vld1q_u8(ptr);
 
-    let mut cmp_masks = [vdupq_n_u8(0); N];
-
-    for i in 0..N {
-        cmp_masks[i] = vceqq_u8(x1, nv[i]);
-    }
+    let cmp_masks = nv.map(|x| vceqq_u8(x1, x));
 
     let cmpmask = parallel_reduce(cmp_masks);
 
