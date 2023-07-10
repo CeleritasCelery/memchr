@@ -1,3 +1,4 @@
+#![allow(clippy::identity_op)]
 use std::arch::aarch64::*;
 use std::mem::size_of;
 
@@ -95,9 +96,18 @@ unsafe fn parallel_reduce<const N: usize>(
     masks[0]
 }
 
+#[inline(always)]
 unsafe fn movemask(x: uint8x16_t) -> u64 {
     let combined = vshrn_n_u16(vreinterpretq_u16_u8(x), 4);
     vget_lane_u64(vreinterpret_u64_u8(combined), 0)
+}
+
+fn forward_pos(x: u64) -> usize {
+    x.trailing_zeros() as usize / 4
+}
+
+fn reverse_pos(x: u64) -> usize {
+    x.leading_zeros() as usize / 4
 }
 
 /// Search 64 bytes
@@ -116,10 +126,10 @@ unsafe fn search64<const IS_FWD: bool, const N: usize, const N4: usize>(
 
     let nv = n.map(|x| vdupq_n_u8(x));
 
-    let masks1 = nv.map(|x| vceqq_u8(x1, x));
-    let masks2 = nv.map(|x| vceqq_u8(x2, x));
-    let masks3 = nv.map(|x| vceqq_u8(x3, x));
-    let masks4 = nv.map(|x| vceqq_u8(x4, x));
+    let masks1 = nv.map(|n| vceqq_u8(x1, n));
+    let masks2 = nv.map(|n| vceqq_u8(x2, n));
+    let masks3 = nv.map(|n| vceqq_u8(x3, n));
+    let masks4 = nv.map(|n| vceqq_u8(x4, n));
 
     let cmpmask = parallel_reduce({
         let mut mask1234 = [vdupq_n_u8(0); N4];
@@ -137,46 +147,46 @@ unsafe fn search64<const IS_FWD: bool, const N: usize, const N4: usize>(
             let mask = movemask(parallel_reduce(masks1));
             let mut at = offset;
             if mask != 0 {
-                return Some(at + (mask.trailing_zeros() as usize / 4));
+                return Some(at + forward_pos(mask));
             }
 
             let mask = movemask(parallel_reduce(masks2));
             at += VEC_SIZE;
             if mask != 0 {
-                return Some(at + (mask.trailing_zeros() as usize / 4));
+                return Some(at + forward_pos(mask));
             }
 
             let mask = movemask(parallel_reduce(masks3));
             at += VEC_SIZE;
             if mask != 0 {
-                return Some(at + (mask.trailing_zeros() as usize / 4));
+                return Some(at + forward_pos(mask));
             }
 
             let mask = movemask(parallel_reduce(masks4));
             at += VEC_SIZE;
-            return Some(at + (mask.trailing_zeros() as usize / 4));
+            return Some(at + forward_pos(mask));
         } else {
             let mask = movemask(parallel_reduce(masks4));
-            let mut at = offset + (4 * VEC_SIZE - 1);
+            let mut at = offset + ((4 * VEC_SIZE) - 1);
             if mask != 0 {
-                return Some(at - (mask.leading_zeros() as usize / 4));
+                return Some(at - reverse_pos(mask));
             }
 
             let mask = movemask(parallel_reduce(masks3));
             at -= VEC_SIZE;
             if mask != 0 {
-                return Some(at - (mask.leading_zeros() as usize / 4));
+                return Some(at - reverse_pos(mask));
             }
 
             let mask = movemask(parallel_reduce(masks2));
             at -= VEC_SIZE;
             if mask != 0 {
-                return Some(at - (mask.leading_zeros() as usize / 4));
+                return Some(at - reverse_pos(mask));
             }
 
             let mask = movemask(parallel_reduce(masks1));
             at -= VEC_SIZE;
-            return Some(at - (mask.leading_zeros() as usize / 4));
+            return Some(at - reverse_pos(mask));
         }
     }
 
@@ -197,8 +207,8 @@ unsafe fn search32<const IS_FWD: bool, const N: usize, const N2: usize>(
 
     let nv = n.map(|x| vdupq_n_u8(x));
 
-    let masks1 = nv.map(|x| vceqq_u8(x1, x));
-    let masks2 = nv.map(|x| vceqq_u8(x2, x));
+    let masks1 = nv.map(|n| vceqq_u8(x1, n));
+    let masks2 = nv.map(|n| vceqq_u8(x2, n));
 
     let cmpmask = parallel_reduce({
         let mut mask12 = [vdupq_n_u8(0); N2];
@@ -208,30 +218,27 @@ unsafe fn search32<const IS_FWD: bool, const N: usize, const N2: usize>(
     });
 
     if !eq0(cmpmask) {
-        let cmp1 = parallel_reduce(masks1);
-        let cmp2 = parallel_reduce(masks2);
-        let combined1 = vshrn_n_u16(vreinterpretq_u16_u8(cmp1), 4);
-        let combined2 = vshrn_n_u16(vreinterpretq_u16_u8(cmp2), 4);
-        let bits1 = vget_lane_u64(vreinterpret_u64_u8(combined1), 0);
-        let bits2 = vget_lane_u64(vreinterpret_u64_u8(combined2), 0);
-
         let offset = ptr as usize - start_ptr as usize;
 
         if IS_FWD {
-            let byte_offset = if bits1 != 0 {
-                (bits1.trailing_zeros() / 4) as usize
-            } else {
-                let bits2 = vget_lane_u64(vreinterpret_u64_u8(combined2), 0);
-                VEC_SIZE + (bits2.trailing_zeros() / 4) as usize
-            };
-            return Some(offset + byte_offset);
+            let mut at = offset;
+            let mask = movemask(parallel_reduce(masks1));
+            if mask != 0 {
+                return Some(at + forward_pos(mask));
+            }
+            let mask = movemask(parallel_reduce(masks2));
+            at += VEC_SIZE;
+            return Some(at + forward_pos(mask));
         } else {
-            let byte_offset = if bits2 != 0 {
-                (bits2.leading_zeros() / 4) as usize
-            } else {
-                VEC_SIZE + (bits1.leading_zeros() / 4) as usize
-            };
-            return Some(offset + (2 * VEC_SIZE - 1) - byte_offset);
+            let mut at = offset + (2 * VEC_SIZE - 1);
+            let mask = movemask(parallel_reduce(masks2));
+            if mask != 0 {
+                return Some(at - reverse_pos(mask));
+            }
+
+            let mask = movemask(parallel_reduce(masks1));
+            at -= VEC_SIZE;
+            return Some(at - reverse_pos(mask));
         }
     }
 
@@ -252,18 +259,16 @@ unsafe fn search16<const IS_FWD: bool, const N: usize>(
     let cmp_masks = nv.map(|x| vceqq_u8(x1, x));
 
     let cmpmask = parallel_reduce(cmp_masks);
+    let mask = movemask(cmpmask);
 
-    let combined = vshrn_n_u16(vreinterpretq_u16_u8(cmpmask), 4);
-    let comb_low = vget_lane_u64(vreinterpret_u64_u8(combined), 0);
-    if comb_low != 0 {
+    if mask != 0 {
         let offset = ptr as usize - start_ptr as usize;
-
-        let res = if IS_FWD {
-            offset + comb_low.trailing_zeros() as usize / 4
+        let pos = if IS_FWD {
+            forward_pos(mask)
         } else {
-            offset + (VEC_SIZE - 1) - (comb_low.leading_zeros() as usize / 4)
+            VEC_SIZE - 1 - reverse_pos(mask)
         };
-        return Some(res);
+        return Some(offset + pos);
     }
 
     None
@@ -289,13 +294,9 @@ unsafe fn memchr_generic_neon<
 
     if haystack.len() < VEC_SIZE {
         if IS_FWD {
-            // For whatever reason, LLVM generates significantly worse
-            // code when using .copied() on the forward search, but
-            // generates very good code for the reverse search (even
-            // better than manual pointer arithmetic).
             return haystack.iter().position(|&x| is_match(x));
         } else {
-            return haystack.iter().copied().rposition(is_match);
+            return haystack.iter().rposition(|&x| is_match(x));
         }
     }
 
