@@ -126,67 +126,56 @@ unsafe fn search64<const IS_FWD: bool, const N: usize, const N4: usize>(
 
     let nv = n.map(|x| vdupq_n_u8(x));
 
-    let masks1 = nv.map(|n| vceqq_u8(x1, n));
-    let masks2 = nv.map(|n| vceqq_u8(x2, n));
-    let masks3 = nv.map(|n| vceqq_u8(x3, n));
-    let masks4 = nv.map(|n| vceqq_u8(x4, n));
+    let masks1 = parallel_reduce(nv.map(|n| vceqq_u8(x1, n)));
+    let masks2 = parallel_reduce(nv.map(|n| vceqq_u8(x2, n)));
+    let masks3 = parallel_reduce(nv.map(|n| vceqq_u8(x3, n)));
+    let masks4 = parallel_reduce(nv.map(|n| vceqq_u8(x4, n)));
 
-    let cmpmask = parallel_reduce({
-        let mut mask1234 = [vdupq_n_u8(0); N4];
-        mask1234[..N].copy_from_slice(&masks1);
-        mask1234[N..2 * N].copy_from_slice(&masks2);
-        mask1234[2 * N..3 * N].copy_from_slice(&masks3);
-        mask1234[3 * N..4 * N].copy_from_slice(&masks4);
-        mask1234
-    });
+    let cmpmask = parallel_reduce([masks1, masks2, masks3, masks4]);
 
     if !eq0(cmpmask) {
         let offset = ptr as usize - start_ptr as usize;
+        let mask1 = movemask(masks1);
+        let mask2 = movemask(masks2);
+        let mask3 = movemask(masks3);
+        let mask4 = movemask(masks4);
 
         if IS_FWD {
-            let mask = movemask(parallel_reduce(masks1));
             let mut at = offset;
-            if mask != 0 {
-                return Some(at + forward_pos(mask));
+            if mask1 != 0 {
+                return Some(at + forward_pos(mask1));
             }
 
-            let mask = movemask(parallel_reduce(masks2));
             at += VEC_SIZE;
-            if mask != 0 {
-                return Some(at + forward_pos(mask));
+            if mask2 != 0 {
+                return Some(at + forward_pos(mask2));
             }
 
-            let mask = movemask(parallel_reduce(masks3));
             at += VEC_SIZE;
-            if mask != 0 {
-                return Some(at + forward_pos(mask));
+            if mask3 != 0 {
+                return Some(at + forward_pos(mask3));
             }
 
-            let mask = movemask(parallel_reduce(masks4));
             at += VEC_SIZE;
-            return Some(at + forward_pos(mask));
+            return Some(at + forward_pos(mask4));
         } else {
-            let mask = movemask(parallel_reduce(masks4));
             let mut at = offset + ((4 * VEC_SIZE) - 1);
-            if mask != 0 {
-                return Some(at - reverse_pos(mask));
+            if mask4 != 0 {
+                return Some(at - reverse_pos(mask4));
             }
 
-            let mask = movemask(parallel_reduce(masks3));
             at -= VEC_SIZE;
-            if mask != 0 {
-                return Some(at - reverse_pos(mask));
+            if mask3 != 0 {
+                return Some(at - reverse_pos(mask3));
             }
 
-            let mask = movemask(parallel_reduce(masks2));
             at -= VEC_SIZE;
-            if mask != 0 {
-                return Some(at - reverse_pos(mask));
+            if mask2 != 0 {
+                return Some(at - reverse_pos(mask2));
             }
 
-            let mask = movemask(parallel_reduce(masks1));
             at -= VEC_SIZE;
-            return Some(at - reverse_pos(mask));
+            return Some(at - reverse_pos(mask1));
         }
     }
 
